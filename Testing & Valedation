@@ -1,1 +1,9 @@
+Test 1: Response time - we measure the path from the radar frame capture to the LED turning on and CAN transmission speed. We run at least 50 trials with the object at different 
+positions in range of the detection and every trial will have 100 ms or less. 
 
+Test 2: Distance and Accuracy - For distance, a target moves towards the radar from several angles and stops at a five foot line and the program prints the radar’s distance over 
+UART to a command window. For accuracy, a log of 10 trials and calculate the percent error for each, and all of them must have a +/- 5% .   
+
+Test 3: False Alarm Rate - With the field cleared of any moving objects, the radar runs for 2 hours while the firmware logs every detections and the LED must activate over UART 
+and the test would only pass if the logs show zero detections for the full 2 hours.
+ 
