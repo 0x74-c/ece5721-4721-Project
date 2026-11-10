@@ -1,0 +1,178 @@
+
+#include <TM4C123.h>
+
+
+// UART CONFIG //   PG. 902              START PG. 893
+#define RCGCUART   (*((volatile unsigned long *)0x400FE618))  //provides software the Capability to enable and disable the UART   PG. 344
+#define R1         0X2           //UART MODULE 1 ; PB0-Rx   PB1-Tx
+
+#define RCGCGPIO   (*((volatile unsigned long *)0x400FE608))  //provides software the Capability to enable and disable the GPIO   PG. 340
+#define PORTB_EN   0X2          //GPIO PORT B  
+#define PORTF_EN   0X20         //GPIO PORT F; PF1 RED LED
+
+#define GPIOAFSEL  (*((volatile unsigned long *)0x40005420))  //register is the mode control select register
+#define AFSEL      0X3          //GPIO Alternate Function Select 
+
+#define GPIODR2R   (*((volatile unsigned long *)0x40005500))
+#define DRV2       0X3          //The corresponding GPIO pin has 2-mA drive
+
+#define GPIOCTL    (*((volatile unsigned long *)0x4000552C))
+#define CTL_U1     0X11
+
+#define GPIOAMSEL  (*((volatile unsigned long *)0x40005528))  //analog mode select register   PG. 687
+#define AMSEL      0X03          //CLEAR BITS 0 AND 1 ; 
+
+#define GPIODEN    (*((volatile unsigned long *)0x4000551C))  //digital enable register   PG. 682
+#define DEN        0X03          //SET BITS 0 AND 1 ; enable digital on PB0 and PB1
+
+// GPIO PORT F RED LED //  
+#define GPIOFDIR   (*((volatile unsigned long *)0x40025400))  //DIRECTION, OUTPUT
+#define GPIOFDEN   (*((volatile unsigned long *)0x4002551C))  //ENABLE REGISTER
+#define GPIOFDATA  (*((volatile unsigned long *)0x400253FC))  //DATA REGISTER
+#define RED        0X02          //SET IN DIR AND DEN, THEN TOGGLE IN DATA
+
+// SYSTICK //   
+#define STCTRL     (*((volatile unsigned long *)0xE000E010))  //SYSTICK CONTROL REGISTER
+#define ST_ENABLE  0X1           //ENABLES TIMER
+#define ST_CLKSRC  0X4           //SYSTEM CLOCK
+#define ST_COUNT   0X10000       //10MS DELAY
+
+#define STRELOAD   (*((volatile unsigned long *)0xE000E014))  //RELOAD VALUE
+#define STCURRENT  (*((volatile unsigned long *)0xE000E018))   
+
+// UART1 //   BASE 0x4000D000
+// BAUD RATE //   BRD = UARTSysClk / (16 * baud) = 3.90625   PG. 903
+#define SYS_CLK_HZ     16000000UL   //BASE CLOCK
+#define RADAR_BAUD     256000UL     //RD-03E BAUD RATE
+#define BRD_DIV        (16UL * RADAR_BAUD)
+
+
+// UART REGISTERS  //  PG. 904
+#define UARTCTL    (*((volatile unsigned long *)0x4000D030)) //CTL REGISTER FOR UART   PG. 918
+#define RXE        0X200   //UART Receive Enable
+#define TXE        0X100   //UART Transmit Enable
+#define UARTEN     0X1     //UART Enable
+
+#define UARTIBRD   (*((volatile unsigned long *)0x4000D024)) //register is the integer part of the baud-rate divisor value   PG. 914
+#define DIVINT     (SystemCoreClock / BRD_DIV)     //INTEGER VALUE OF BRD
+
+//UARTFBRD[DIVFRAC] = integer(0.90625 * 64 + 0.5) = 58.5   =   3A
+#define UARTFBRD   (*((volatile unsigned long *)0x4000D028))  //register is the fractional part of the baud-rate divisor value   PG. 915
+#define DIVFRAC    (((SystemCoreClock % BRD_DIV) * 64UL + (BRD_DIV / 2UL)) / BRD_DIV)   //integer(frac * 64 + 0.5)    //FRACTIONAL VALUE OF BRD
+
+#define UARTLCRH   (*((volatile unsigned long *)0x4000D02C)) //Serial parameters such as data length, parity, and stop bit selection are implemented in this register    PG. 916
+#define WLEN       0X60    //8 BITS UART WORD LENGTH
+#define FEN        0X10     //UART Enable FIFOs
+
+#define UARTCC     (*((volatile unsigned long *)0x4000DFC8)) //register controls the baud clock source for the UART module   PG. 939
+#define CS         0X0     //System clock (based on clock source and divisor factor)
+
+#define UARTDMACTL (*((volatile unsigned long *)0x4000D048)) //register is the DMA control register   PG. 935
+ 
+#define UARTDR     (*((volatile unsigned long *)0x4000D000)) // DATA REGISTER
+#define DATA       0XFF    //LAST BYTE
+
+#define UARTFR     (*((volatile unsigned long *)0x4000D018)) // FLAG REGISTER  PG. 911
+#define RXFE       0X10    //the receive FIFO is empty
+
+// RADAR FRAME // AA AA 00 XX 00 55 55 ; XX = DISTANCE
+#define START      0XAA    // START FRAME
+#define END        0X55    // END FRAME
+
+volatile unsigned char RXDATA = 0;
+volatile unsigned char FRAME[7] = {0};
+volatile unsigned long DIST = 0;  
+volatile unsigned long PERIOD = 50;
+volatile unsigned long TICKS = 0;
+volatile unsigned long DELAY;
+
+void UART1_init(void){
+	//ENABLE CLOCK             CLOCK GATING WAIT
+	RCGCUART |= R1;
+	RCGCGPIO |= PORTB_EN;
+	DELAY = RCGCGPIO;       //dummy reads let the clocks settle
+	(void)DELAY;
+	//Disable the UART by clearing the UARTEN bit in the UARTCTL register.
+	UARTCTL &= ~UARTEN;
+	
+	//Write the integer portion of the BRD to the UARTIBRD register.
+	UARTIBRD = DIVINT;
+	
+	//Write the fractional portion of the BRD to the UARTFBRD register.
+	UARTFBRD = DIVFRAC;
+	
+	//Write the desired serial parameters to the UARTLCRH register
+	UARTLCRH = ( WLEN | FEN );
+	
+	//Configure the UART clock source by writing to the UARTCC register
+	UARTCC = CS;
+	
+	//Enable the UART by setting the UARTEN bit in the UARTCTL register
+	GPIOAFSEL |= AFSEL;
+	GPIODR2R |= DRV2;
+	GPIOCTL |= CTL_U1;
+	GPIOAMSEL &= ~AMSEL;
+	GPIODEN |= DEN;
+	
+	UARTCTL |= ( RXE | TXE | UARTEN );
+}
+
+void LED_init(void){
+	volatile unsigned long DELAY;
+	RCGCGPIO |= PORTF_EN;                  
+	DELAY = RCGCGPIO;                       
+	(void)DELAY;
+	GPIOFDIR |= RED;                         
+	GPIOFDEN |= RED;                         
+	GPIOFDATA &= ~RED;      
+}
+
+void SYSTICK_init(void){
+	STCTRL = 0;                              
+	STRELOAD = (SystemCoreClock / 100UL) - 1UL;   
+	STCURRENT = 0;                          
+	STCTRL = ( ST_CLKSRC | ST_ENABLE ); 
+}
+
+
+int main(void)
+{
+	SystemCoreClockUpdate();
+	UART1_init();
+	LED_init();
+	SYSTICK_init();
+    
+	while (1){
+		if((UARTFR & RXFE) == 0){            // CHECKING FLAG TO SEE IF FIFO
+			RXDATA = (UARTDR & DATA);          // ONLY TAKING THE FIRST 2 BYTES
+			
+			for (unsigned char i = 0; i < 6; i++){  
+				FRAME[i] = FRAME[i + 1];         // FEEDING THE BYTES INTO THE READABLE FRAME
+			}
+			FRAME[6] = RXDATA;                 //ADDING NEW DATA TO FRAME
+			
+			if (FRAME[0] == START && FRAME[1] == START && FRAME[5] == END && FRAME[6] == END){     //CHECKING IF FRAME IS IN POSITION
+				DIST = FRAME[3];
+				
+				if (DIST <= 20){            //OBJECT IS CLOSE
+					PERIOD = 5;               //LED BLINK FASTER
+				}
+				else if (DIST >= 200){      //OBJECT IS FAR
+					PERIOD = 50;              //LED BLINK SLOWER
+				}
+				else{                              //SCALLING INBETWEEN
+					PERIOD = 5 + ((DIST - 20) * (50 - 5)) / (200 - 20);
+				}
+			}
+		}
+		
+		if (STCTRL & ST_COUNT){                
+			TICKS++;
+			if (TICKS >= PERIOD){
+				GPIOFDATA ^= RED;                  //ADDED ; toggle the red LED
+				TICKS = 0;
+			}
+		}
+	}
+}
+
